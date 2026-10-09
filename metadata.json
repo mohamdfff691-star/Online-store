@@ -1,0 +1,8 @@
+{
+  "name": "RLZ SHOP | Boutique Luxe Relizane",
+  "description": "RLZ SHOP - High-end Phone Accessories & Fashion Boutique in Relizane Ville, Algeria (+213 5 56896329).",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
