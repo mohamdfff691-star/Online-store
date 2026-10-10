@@ -70,6 +70,28 @@ export async function updateProductOnServer(product: Product): Promise<Product> 
   return await res.json();
 }
 
+// 3b. Admin: Sync/Migrate local products to shared server database
+export async function syncProductsWithServer(products: Product[]): Promise<Product[]> {
+  try {
+    const token = getStoredAdminToken();
+    const res = await fetch('/api/products/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'x-admin-token': token,
+      },
+      body: JSON.stringify({ products }),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (err) {
+    console.warn('[RLZ SHOP API] Error syncing products with server:', err);
+  }
+  return products;
+}
+
 // 4. Admin: Delete Product from Server
 export async function deleteProductOnServer(id: string): Promise<boolean> {
   const token = getStoredAdminToken();

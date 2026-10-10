@@ -25,6 +25,7 @@ import {
   updateOrderStatusOnServer,
   deleteOrderOnServer,
   clearStoredAdminToken,
+  syncProductsWithServer,
 } from './api/client';
 import { Plus, Search, Smartphone, Shirt, Layers } from 'lucide-react';
 
@@ -156,11 +157,32 @@ export default function App() {
       try {
         const serverProducts = await fetchGlobalProducts();
         if (isMounted && Array.isArray(serverProducts)) {
-          setProducts(serverProducts);
-          localStorage.setItem(STORAGE_PRODUCTS_KEY, JSON.stringify(serverProducts));
+          if (serverProducts.length > 0) {
+            setProducts(serverProducts);
+            localStorage.setItem(STORAGE_PRODUCTS_KEY, JSON.stringify(serverProducts));
+          } else {
+            // If server database is currently empty, check if this admin browser had local products from earlier
+            const localSaved = localStorage.getItem(STORAGE_PRODUCTS_KEY);
+            if (localSaved) {
+              try {
+                const parsed = JSON.parse(localSaved);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                  console.log('[RLZ SHOP] Auto-migrating local products to server database...');
+                  const synced = await syncProductsWithServer(parsed);
+                  if (isMounted && Array.isArray(synced)) {
+                    setProducts(synced);
+                    return;
+                  }
+                }
+              } catch {
+                // ignore
+              }
+            }
+            setProducts([]);
+          }
         }
       } catch (err) {
-        // Keeps fallback cache
+        // Keeps fallback cache if offline
       }
     };
 

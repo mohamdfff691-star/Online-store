@@ -6,9 +6,18 @@ import fs from 'fs';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Enable large JSON bodies for product image uploads (base64)
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+// Enable large JSON bodies for high-res product photo uploads (base64)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Set CORS & disable caching on all API requests
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-token');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  next();
+});
 
 // Ensure database directory exists
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -49,7 +58,7 @@ function writeJsonFile<T>(filePath: string, data: T): void {
 readJsonFile(PRODUCTS_FILE, []);
 readJsonFile(ORDERS_FILE, []);
 
-// Admin Auth Token verification middleware
+// Admin Auth Token verification
 const ADMIN_USERNAME = 'RLZ_Admin_2026';
 const ADMIN_PIN = 'RLZ#Secure!96329';
 const ADMIN_SECRET_TOKEN = 'rlz_auth_token_96329_verified';
@@ -59,7 +68,8 @@ function verifyAdmin(req: Request, res: Response, next: () => void) {
   const adminToken = req.headers['x-admin-token'];
   if (
     authHeader === `Bearer ${ADMIN_SECRET_TOKEN}` ||
-    adminToken === ADMIN_SECRET_TOKEN
+    adminToken === ADMIN_SECRET_TOKEN ||
+    authHeader === ADMIN_SECRET_TOKEN
   ) {
     return next();
   }
@@ -67,6 +77,19 @@ function verifyAdmin(req: Request, res: Response, next: () => void) {
 }
 
 // ======================== API ROUTES ========================
+
+// Health check
+app.get('/api/health', (_req: Request, res: Response) => {
+  const products = readJsonFile<any[]>(PRODUCTS_FILE, []);
+  const orders = readJsonFile<any[]>(ORDERS_FILE, []);
+  res.json({
+    status: 'ok',
+    store: 'RLZ SHOP Relizane',
+    productsCount: products.length,
+    ordersCount: orders.length,
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // 1. Admin Login Endpoint
 app.post('/api/admin/login', (req: Request, res: Response) => {
@@ -84,7 +107,7 @@ app.post('/api/admin/login', (req: Request, res: Response) => {
   });
 });
 
-// 2. Public: Get All Products (Global Cloud Store)
+// 2. Public: Get All Products (Global Cloud Store for all phones & devices)
 app.get('/api/products', (_req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   const products = readJsonFile(PRODUCTS_FILE, []);
@@ -105,14 +128,42 @@ app.post('/api/products', verifyAdmin, (req: Request, res: Response) => {
     createdAt: productData.createdAt || Date.now(),
   };
 
-  products.unshift(newProduct);
-  writeJsonFile(PRODUCTS_FILE, products);
+  // Avoid duplicates
+  const exists = products.find((p) => p.id === newProduct.id);
+  if (!exists) {
+    products.unshift(newProduct);
+  } else {
+    const idx = products.findIndex((p) => p.id === newProduct.id);
+    products[idx] = newProduct;
+  }
 
-  console.log(`[RLZ SHOP DB] Added product: ${newProduct.title} (${newProduct.price} DZD)`);
+  writeJsonFile(PRODUCTS_FILE, products);
+  console.log(`[RLZ SHOP DB] Added/Updated product globally: ${newProduct.title} (${newProduct.price} DZD)`);
   res.status(201).json(newProduct);
 });
 
-// 4. Admin: Update Product
+// 4. Admin: Auto-Sync / Migration Endpoint
+app.post('/api/products/sync', verifyAdmin, (req: Request, res: Response) => {
+  const { products: incomingProducts } = req.body;
+  let current = readJsonFile<any[]>(PRODUCTS_FILE, []);
+
+  if (Array.isArray(incomingProducts) && incomingProducts.length > 0) {
+    for (const p of incomingProducts) {
+      const idx = current.findIndex((c) => c.id === p.id);
+      if (idx === -1) {
+        current.push(p);
+      } else {
+        current[idx] = { ...current[idx], ...p };
+      }
+    }
+    writeJsonFile(PRODUCTS_FILE, current);
+    console.log(`[RLZ SHOP DB] Synced ${current.length} total products globally`);
+  }
+
+  res.json(current);
+});
+
+// 5. Admin: Update Product
 app.put('/api/products/:id', verifyAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
   const updateData = req.body;
@@ -127,11 +178,11 @@ app.put('/api/products/:id', verifyAdmin, (req: Request, res: Response) => {
   products[index] = { ...products[index], ...updateData, id };
   writeJsonFile(PRODUCTS_FILE, products);
 
-  console.log(`[RLZ SHOP DB] Updated product: ${products[index].title}`);
+  console.log(`[RLZ SHOP DB] Updated product globally: ${products[index].title}`);
   res.json(products[index]);
 });
 
-// 5. Admin: Delete Product
+// 6. Admin: Delete Product
 app.delete('/api/products/:id', verifyAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
   let products = readJsonFile<any[]>(PRODUCTS_FILE, []);
@@ -143,27 +194,29 @@ app.delete('/api/products/:id', verifyAdmin, (req: Request, res: Response) => {
   }
 
   writeJsonFile(PRODUCTS_FILE, products);
-  console.log(`[RLZ SHOP DB] Deleted product: ${id}`);
+  console.log(`[RLZ SHOP DB] Deleted product globally: ${id}`);
   res.json({ success: true, message: 'Product deleted' });
 });
 
-// 6. Admin: Seed Demo Products
+// 7. Admin: Seed Demo Products
 app.post('/api/products/seed', verifyAdmin, (req: Request, res: Response) => {
   const { demoProducts } = req.body;
   if (Array.isArray(demoProducts)) {
     writeJsonFile(PRODUCTS_FILE, demoProducts);
+    console.log(`[RLZ SHOP DB] Seeded ${demoProducts.length} demo products globally`);
     return res.json({ success: true, count: demoProducts.length });
   }
   return res.status(400).json({ error: 'Invalid demo products payload' });
 });
 
-// 7. Admin: Clear All Products
+// 8. Admin: Clear All Products
 app.post('/api/products/clear', verifyAdmin, (_req: Request, res: Response) => {
   writeJsonFile(PRODUCTS_FILE, []);
+  console.log(`[RLZ SHOP DB] Cleared global inventory`);
   res.json({ success: true, message: 'Products inventory cleared' });
 });
 
-// 8. Public: Customer Submits Order
+// 9. Public: Customer Submits Order
 app.post('/api/orders', (req: Request, res: Response) => {
   const orderData = req.body;
   if (!orderData.customerName || !orderData.phone || !Array.isArray(orderData.items)) {
@@ -184,13 +237,13 @@ app.post('/api/orders', (req: Request, res: Response) => {
   res.status(201).json(newOrder);
 });
 
-// 9. Admin: Get All Orders
+// 10. Admin: Get All Orders
 app.get('/api/orders', verifyAdmin, (_req: Request, res: Response) => {
   const orders = readJsonFile(ORDERS_FILE, []);
   res.json(orders);
 });
 
-// 10. Admin: Update Order Status
+// 11. Admin: Update Order Status
 app.put('/api/orders/:id/status', verifyAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -207,7 +260,7 @@ app.put('/api/orders/:id/status', verifyAdmin, (req: Request, res: Response) => 
   res.json(orders[index]);
 });
 
-// 11. Admin: Delete Order
+// 12. Admin: Delete Order
 app.delete('/api/orders/:id', verifyAdmin, (req: Request, res: Response) => {
   const { id } = req.params;
   let orders = readJsonFile<any[]>(ORDERS_FILE, []);
@@ -219,10 +272,20 @@ app.delete('/api/orders/:id', verifyAdmin, (req: Request, res: Response) => {
 // ======================== VITE & STATIC FILES ========================
 
 async function startServer() {
-  const isProduction = process.env.NODE_ENV === 'production';
+  const distPath = path.resolve(process.cwd(), 'dist');
+  const isProduction = process.env.NODE_ENV === 'production' || (fs.existsSync(distPath) && !process.env.VITE_DEV);
 
-  if (!isProduction) {
-    // In development: mount Vite middleware
+  if (isProduction && fs.existsSync(distPath)) {
+    console.log(`[RLZ SHOP] Serving production build from ${distPath}`);
+    app.use(express.static(distPath));
+    app.get('*', (req: Request, res: Response, next: () => void) => {
+      if (req.path.startsWith('/api')) {
+        return next();
+      }
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
+    console.log(`[RLZ SHOP] Starting Vite middleware for development`);
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -232,19 +295,10 @@ async function startServer() {
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    // In production: serve built dist folder
-    const distPath = path.resolve(process.cwd(), 'dist');
-    if (fs.existsSync(distPath)) {
-      app.use(express.static(distPath));
-      app.get('*', (_req: Request, res: Response) => {
-        res.sendFile(path.join(distPath, 'index.html'));
-      });
-    }
   }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`[RLZ SHOP] Full-Stack server running on port ${PORT}`);
+    console.log(`[RLZ SHOP] Full-Stack server running on http://0.0.0.0:${PORT}`);
   });
 }
 
